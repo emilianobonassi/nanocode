@@ -9,14 +9,6 @@
 //!   `<NANOCODE_OPENAI_BASE_URL>/models`. Hosts with their own client (for
 //!   example a paying HTTP layer) set only this.
 //!
-//! * `NANOCODE_CA_CERT`: PEM file of extra root certificates to trust for
-//!   these requests, e.g. the CA of a TLS-intercepting egress proxy.
-//!
-//! No API key is required: without one no `Authorization` header is sent, so
-//! a proxy can add it. With a secret-swapping proxy such as iron-proxy, set
-//! the key to the proxy's placeholder token and the proxy injects the real
-//! one. `HTTPS_PROXY` is honored.
-//!
 //! The listed IDs replace the built-in Codex models in the picker, `-m` and
 //! `nanocode models`, and are sent to the endpoint unchanged.
 
@@ -52,9 +44,8 @@ pub fn apply(mut clients: ModelClients) -> Result<ModelClients, String> {
     }
     nanocode::codex::transport::install_default_rustls_crypto_provider();
     let key = api_key();
-    let http = http_client()?;
     if let Some(url) = models_url {
-        let ids = fetch_models(&http, &url, key.as_deref())?;
+        let ids = fetch_models(&url, key.as_deref())?;
         if ids.is_empty() {
             return Err(format!("{url} listed no models"));
         }
@@ -72,31 +63,12 @@ pub fn apply(mut clients: ModelClients) -> Result<ModelClients, String> {
             nanocode::OpenAi::builder(auth.clone())
                 .api_base_url(base.clone())
                 .transport(nanocode::codex::transport::ResponsesTransport::Https)
-                .http_client(http.clone())
         });
     }
     Ok(clients)
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder();
-    if let Some(path) = env("NANOCODE_CA_CERT") {
-        let pem = std::fs::read(&path)
-            .map_err(|error| format!("failed to read NANOCODE_CA_CERT {path}: {error}"))?;
-        for cert in reqwest::Certificate::from_pem_bundle(&pem)
-            .map_err(|error| format!("NANOCODE_CA_CERT {path} is not a PEM bundle: {error}"))?
-        {
-            builder = builder.add_root_certificate(cert);
-        }
-    }
-    builder.build().map_err(|error| error.to_string())
-}
-
-fn fetch_models(
-    http: &reqwest::Client,
-    url: &str,
-    key: Option<&str>,
-) -> Result<Vec<String>, String> {
+fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<String>, String> {
     #[derive(serde::Deserialize)]
     struct List {
         data: Vec<Entry>,
@@ -110,7 +82,7 @@ fn fetch_models(
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let mut request = http
+        let mut request = reqwest::Client::new()
             .get(url)
             .timeout(std::time::Duration::from_secs(15));
         if let Some(key) = key {
@@ -119,15 +91,7 @@ fn fetch_models(
         let response = request
             .send()
             .await
-            .map_err(|error| {
-                let mut message = format!("failed to list models from {url}: {error}");
-                let mut source = std::error::Error::source(&error);
-                while let Some(cause) = source {
-                    message.push_str(&format!(": {cause}"));
-                    source = cause.source();
-                }
-                message
-            })?;
+            .map_err(|error| format!("failed to list models from {url}: {error}"))?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!("failed to list models from {url}: HTTP {status}"));
