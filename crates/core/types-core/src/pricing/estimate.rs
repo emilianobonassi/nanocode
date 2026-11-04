@@ -121,6 +121,13 @@ const MIMO_STANDARD: TokenRates = TokenRates {
     output: 870,
 };
 const LONG_CONTEXT_THRESHOLD: u64 = 272_000;
+// Endpoint-listed models have no local price table; the endpoint bills them.
+const CUSTOM_UNPRICED: TokenRates = TokenRates {
+    input: 0,
+    cached_input: 0,
+    cache_write_input: 0,
+    output: 0,
+};
 
 #[derive(Clone, Copy)]
 struct TokenRates {
@@ -136,6 +143,7 @@ impl TokenRates {
 
         let long = input_tokens > LONG_CONTEXT_THRESHOLD;
         match (model, service_tier, long) {
+            (Model::Custom(_), _, _) => CUSTOM_UNPRICED,
             (Model::Glm53, _, _) => GLM53_STANDARD,
             (Model::Kimi, _, _) => KIMI_STANDARD,
             (Model::Mimo, _, _) => MIMO_STANDARD,
@@ -191,7 +199,7 @@ impl ServiceTier {
     #[must_use]
     pub const fn effective_for_model(self, model: Model) -> Self {
         match (model, self) {
-            (Model::Glm53 | Model::Kimi | Model::Mimo, _) => Self::Standard,
+            (Model::Glm53 | Model::Kimi | Model::Mimo | Model::Custom(_), _) => Self::Standard,
             (Model::Luna, Self::Ultrafast) => Self::Fast,
             _ => self,
         }

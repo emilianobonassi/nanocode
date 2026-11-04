@@ -8,6 +8,7 @@ use nanocode_tui::{
 pub fn catalog() -> Vec<(HarnessFamily, Vec<ModelSelection>)> {
     HarnessFamily::builtin()
         .into_iter()
+        .filter(|family| !nanocode::Model::endpoint_served() || *family == HarnessFamily::Codex)
         .map(|family| {
             let models = family.models().collect();
             (family, models)
@@ -16,7 +17,9 @@ pub fn catalog() -> Vec<(HarnessFamily, Vec<ModelSelection>)> {
 }
 
 fn harness_title(family: &HarnessFamily) -> String {
-    if *family == HarnessFamily::Claude {
+    if nanocode::Model::endpoint_served() {
+        "Endpoint".into()
+    } else if *family == HarnessFamily::Claude {
         "Claude".into()
     } else {
         "Codex".into()

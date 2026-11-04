@@ -88,6 +88,11 @@ impl ModelClients {
     }
 
     #[must_use]
+    pub(crate) fn has_openai(&self) -> bool {
+        self.openai.is_some()
+    }
+
+    #[must_use]
     pub fn openai(
         mut self,
         openai: impl Fn() -> nanocode::codex::OpenAiBuilder + Send + Sync + 'static,
@@ -519,6 +524,9 @@ pub fn parse_model(value: &str) -> Result<ModelSelection> {
     let value = value.trim();
     if let Ok(model) = value.parse::<Model>() {
         return Ok(ModelSelection::Codex(model));
+    }
+    if Model::endpoint_served() {
+        return Err(value.parse::<Model>().unwrap_err().into());
     }
     if let Ok(model) = value.parse::<ClaudeModel>() {
         return Ok(ModelSelection::Claude(model));

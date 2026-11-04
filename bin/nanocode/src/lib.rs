@@ -1,5 +1,6 @@
 #![cfg(not(target_family = "wasm"))]
 
+mod custom_endpoint;
 mod actions;
 mod app;
 mod cli;
@@ -77,6 +78,13 @@ pub fn run() -> ExitCode {
 
 pub fn run_with(clients: ModelClients) -> ExitCode {
     let entered = std::time::Instant::now();
+    let clients = match custom_endpoint::apply(clients) {
+        Ok(clients) => clients,
+        Err(error) => {
+            eprintln!("nanocode: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let cli = Cli::parse();
     let parsed = entered.elapsed();
     let home = match cli_home(&cli) {
@@ -197,6 +205,9 @@ async fn prepare(
             model
         }
         (None, Some(harness)) => family(harness).default_model(),
+        (None, None) if custom_endpoint::served() => {
+            nanocode::HarnessFamily::Codex.default_model()
+        }
         (None, None) => nanocode::HarnessFamily::Claude.default_model(),
     };
     if let Some(gateway) = &gateway {
@@ -494,7 +505,11 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
 
 fn print_models() {
     for (family, models) in models::catalog() {
-        println!("{}", app::family_label(&family));
+        if nanocode::Model::endpoint_served() {
+            println!("Endpoint models");
+        } else {
+            println!("{}", app::family_label(&family));
+        }
         for model in models {
             let capabilities = model.capabilities(nanocode::ModelTransport::Native);
             let thinking = capabilities

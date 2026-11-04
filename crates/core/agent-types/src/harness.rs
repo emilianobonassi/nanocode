@@ -33,7 +33,12 @@ impl HarnessFamily {
 
     pub fn default_model(&self) -> ModelSelection {
         if *self == Self::Codex {
-            ModelSelection::Codex(Model::Sol)
+            let available = Model::available();
+            ModelSelection::Codex(if available.contains(&Model::Sol) {
+                Model::Sol
+            } else {
+                available.first().copied().unwrap_or(Model::Sol)
+            })
         } else if *self == Self::Claude {
             ModelSelection::Claude(ClaudeModel::Opus55)
         } else {
@@ -288,7 +293,7 @@ impl ModelSelection {
     }
 
     pub fn for_family(family: HarnessFamily) -> impl Iterator<Item = Self> {
-        Model::ALL
+        Model::available()
             .into_iter()
             .map(Self::Codex)
             .chain(ClaudeModel::ALL.into_iter().map(Self::Claude))
@@ -495,6 +500,7 @@ fn display_name(model: &ModelSelection) -> &'static str {
         (Some(Model::Glm53), _) => "GLM-5.3",
         (Some(Model::Kimi), _) => "Kimi K3",
         (Some(Model::Mimo), _) => "MiMo V2.6 Pro",
+        (Some(Model::Custom(id)), _) => id,
         (_, Some(ClaudeModel::Opus55)) => "Claude Opus 5.5",
         (_, Some(ClaudeModel::Sonnet55)) => "Claude Sonnet 5.5",
         (_, Some(ClaudeModel::Haiku55)) => "Claude Haiku 5.5",

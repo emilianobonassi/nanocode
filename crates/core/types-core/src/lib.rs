@@ -11,8 +11,7 @@ pub use responses::{ContentItem, FunctionOutputContent, ResponseEvent, ResponseI
 
 pub const MODEL: &str = Model::Astra.as_str();
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum Model {
     Sol,
@@ -22,24 +21,122 @@ pub enum Model {
     #[default]
     Astra,
 
-    #[serde(rename = "glm-5.3")]
     Glm53,
 
-    #[serde(rename = "kimi-k3", alias = "kimi")]
     Kimi,
 
-    #[serde(rename = "mimo-v2.6-pro", alias = "mimo")]
     Mimo,
+
+    /// A model served by a custom OpenAI-compatible endpoint, registered at
+    /// startup with [`Model::register_custom`]. The ID is sent unchanged.
+    Custom(&'static str),
 }
+
+static CUSTOM_MODELS: std::sync::RwLock<Vec<&'static str>> = std::sync::RwLock::new(Vec::new());
+static SERVED_MODELS: std::sync::RwLock<Vec<Model>> = std::sync::RwLock::new(Vec::new());
 
 impl Model {
     pub const ALL: [Self; 3] = [Self::Astra, Self::Sol, Self::Luna];
+
+    /// Registers model IDs served by a custom endpoint so the picker, `-m`
+    /// and stored sessions accept them. IDs that name a built-in model keep
+    /// the built-in variant.
+    pub fn register_custom<I, S>(ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self::register(ids, false);
+    }
+
+    /// Like [`Model::register_custom`], and also makes these IDs, in order,
+    /// the Codex models offered by the picker instead of the built-in list.
+    pub fn register_served<I, S>(ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self::register(ids, true);
+    }
+
+    fn register<I, S>(ids: I, served: bool)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut models = CUSTOM_MODELS.write().unwrap_or_else(|e| e.into_inner());
+        let mut offered = SERVED_MODELS.write().unwrap_or_else(|e| e.into_inner());
+        for id in ids {
+            let id = id.as_ref().trim();
+            if id.is_empty() {
+                continue;
+            }
+            // An endpoint's list replaces the built-in catalog entirely, so its
+            // IDs never pick up built-in tuning (tiers, thinking, context).
+            let builtin = if served { None } else { Self::builtin(id) };
+            let model = match builtin {
+                Some(model) => model,
+                None => match models.iter().find(|known| **known == id) {
+                    Some(known) => Self::Custom(known),
+                    None => {
+                        let leaked: &'static str = Box::leak(id.to_owned().into_boxed_str());
+                        models.push(leaked);
+                        Self::Custom(leaked)
+                    }
+                },
+            };
+            if served && !offered.contains(&model) {
+                offered.push(model);
+            }
+        }
+    }
+
+    /// Codex models to offer: the endpoint's list when one was registered
+    /// with [`Model::register_served`], otherwise [`Model::ALL`].
+    #[must_use]
+    pub fn available() -> Vec<Self> {
+        let offered = SERVED_MODELS.read().unwrap_or_else(|e| e.into_inner());
+        if offered.is_empty() {
+            Self::ALL.to_vec()
+        } else {
+            offered.clone()
+        }
+    }
+
+    /// Whether an endpoint's model list replaced the built-in catalog.
+    #[must_use]
+    pub fn endpoint_served() -> bool {
+        !SERVED_MODELS.read().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
+    /// Custom models registered with [`Model::register_custom`].
+    #[must_use]
+    pub fn custom() -> Vec<Self> {
+        CUSTOM_MODELS
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|id| Self::Custom(id))
+            .collect()
+    }
+
+    fn builtin(value: &str) -> Option<Self> {
+        Some(match value {
+            "gpt-6.1-sol" | "sol" => Self::Sol,
+            "gpt-6-luna" | "luna" => Self::Luna,
+            "gpt-6-astra" | "astra" => Self::Astra,
+            "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Self::Glm53,
+            "kimi-k3" | "kimi" => Self::Kimi,
+            "mimo-v2.6-pro" | "mimo" => Self::Mimo,
+            _ => return None,
+        })
+    }
 
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
             Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo => Thinking::Low,
-            Self::Sol | Self::Luna => Thinking::Medium,
+            Self::Sol | Self::Luna | Self::Custom(_) => Thinking::Medium,
         }
     }
 
@@ -52,6 +149,7 @@ impl Model {
             Self::Glm53 => "@cf/zai-org/glm-5.3",
             Self::Kimi => "kimi-k3",
             Self::Mimo => "mimo-v2.6-pro",
+            Self::Custom(id) => id,
         }
     }
 
@@ -59,7 +157,7 @@ impl Model {
     pub const fn supports_thinking(self, thinking: Thinking) -> bool {
         match self {
             Self::Kimi => matches!(thinking, Thinking::Low | Thinking::High),
-            Self::Glm53 | Self::Mimo => {
+            Self::Glm53 | Self::Mimo | Self::Custom(_) => {
                 matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High)
             }
             Self::Luna => true,
@@ -76,7 +174,10 @@ impl Model {
     pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
         !matches!(
             (self, mode),
-            (Self::Glm53 | Self::Kimi | Self::Mimo, ReasoningMode::Pro)
+            (
+                Self::Glm53 | Self::Kimi | Self::Mimo | Self::Custom(_),
+                ReasoningMode::Pro
+            )
         )
     }
 
@@ -86,6 +187,7 @@ impl Model {
             Self::Glm53 => 1_310_720,
             Self::Kimi => 1_000_000,
             Self::Mimo => 1_048_576,
+            Self::Custom(_) => CONTEXT_WINDOW_TOKENS,
             _ => MAX_CONTEXT_WINDOW_TOKENS,
         }
     }
@@ -101,17 +203,68 @@ impl FromStr for Model {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "gpt-6.1-sol" | "sol" => Ok(Self::Sol),
-            "gpt-6-luna" | "luna" => Ok(Self::Luna),
-            "gpt-6-astra" | "astra" => Ok(Self::Astra),
-            "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Ok(Self::Glm53),
-            "kimi-k3" | "kimi" => Ok(Self::Kimi),
-            "mimo-v2.6-pro" | "mimo" => Ok(Self::Mimo),
-            _ => Err(format!(
-                "invalid model {value:?}; expected gpt-6-astra, gpt-6.1-sol, gpt-6-luna, @cf/zai-org/glm-5.3, kimi-k3, or mimo-v2.6-pro"
-            )),
+        let served = SERVED_MODELS.read().unwrap_or_else(|e| e.into_inner());
+        if !served.is_empty() {
+            return served
+                .iter()
+                .find(|model| model.as_str() == value)
+                .copied()
+                .ok_or_else(|| {
+                    let known = served.iter().map(|model| model.as_str()).collect::<Vec<_>>();
+                    format!("invalid model {value:?}; the endpoint serves {}", known.join(", "))
+                });
         }
+        drop(served);
+        if let Some(model) = Self::builtin(value) {
+            return Ok(model);
+        }
+        if let Some(id) = CUSTOM_MODELS
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|id| **id == value)
+        {
+            return Ok(Self::Custom(id));
+        }
+        Err(format!(
+            "invalid model {value:?}; expected gpt-6-astra, gpt-6.1-sol, gpt-6-luna, @cf/zai-org/glm-5.3, kimi-k3, mimo-v2.6-pro or a model from NANOCODE_OPENAI_BASE_URL"
+        ))
+    }
+}
+
+impl Serialize for Model {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::Sol => "sol",
+            Self::Luna => "luna",
+            Self::Astra => "astra",
+            Self::Glm53 => "glm-5.3",
+            Self::Kimi => "kimi-k3",
+            Self::Mimo => "mimo-v2.6-pro",
+            Self::Custom(id) => id,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Model {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        if let Ok(model) = value.parse() {
+            return Ok(model);
+        }
+        if let Some(model) = Self::builtin(&value) {
+            return Ok(model);
+        }
+        // Keep sessions saved with a custom model loadable even when the
+        // endpoint no longer lists it.
+        Self::register_custom([value.as_str()]);
+        CUSTOM_MODELS
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|id| **id == value)
+            .map(|id| Self::Custom(id))
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid model {value:?}")))
     }
 }
 
